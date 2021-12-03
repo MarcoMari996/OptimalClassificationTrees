@@ -149,7 +149,7 @@ def OCT(X, y, D=2, alpha=1, Nmin=5):
         model.cnstrLeaves.add(expr=sum(model.c[t, k] for k in model.K) == model.l[t])
 
         #  constraints on obs in leaves
-        model.cnstrLeaves.add(expr=sum(model.z[i, t] for i in model.I) <= Nmin * model.l[t])
+        model.cnstrLeaves.add(expr=sum(model.z[i, t] for i in model.I) >= Nmin * model.l[t])
 
         for i in model.I:
             model.cnstrLeaves.add(expr=model.z[i, t] <= model.l[t])
@@ -164,7 +164,7 @@ def OCT(X, y, D=2, alpha=1, Nmin=5):
             for m in tree.find_left_anchestors(t):
                 model.cnstrLeaves.add(
                     expr=sum(model.a[m, j] * (X[i - 1, j - 1] + epsilon[j - 1]) for j in model.J) <= model.b[m] + (
-                                1 + np.max(epsilon)) * (1 - model.z[i, t]))
+                            1 + np.max(epsilon)) * (1 - model.z[i, t]))
 
     for i in model.I:
         model.cnstrLeaves.add(expr=sum(model.z[i, t] for t in model.Tl) == 1)
@@ -172,11 +172,14 @@ def OCT(X, y, D=2, alpha=1, Nmin=5):
     #  - constraints on branch nodes - #
     model.cnstrBranches = ConstraintList()
     for t in model.Tb:
+        model.cnstrBranches.add(model.d[t] == 1) # forcing all the branch node to apply a split
+
         model.cnstrBranches.add(expr=sum(model.a[t, j] for j in model.J) == model.d[t])
         model.cnstrBranches.add(expr=model.b[t] <= model.d[t])
-        if t > 1:
+        # if t > 1:
             # cannot find parent of the root
-            model.cnstrBranches.add(expr=model.d[t] <= model.d[tree.find_parent(t)])
+        #     model.cnstrBranches.add(expr=model.d[t] <= model.d[tree.find_parent(t)])
+
         '''
         # branch conditions 
         for i in model.I: 
@@ -189,7 +192,7 @@ def OCT(X, y, D=2, alpha=1, Nmin=5):
         '''
     # ---- Solve the problem ---- #
     solverpath = "/Users/marco/Desktop/Anaconda_install/anaconda3/bin/glpsol"
-    sol = SolverFactory('glpk', executable=solverpath).solve(model)
+    sol = SolverFactory('glpk', executable=solverpath).solve(model, tee=True)
     for info in sol['Solver']:
         print(info)
 
@@ -198,19 +201,22 @@ def OCT(X, y, D=2, alpha=1, Nmin=5):
     A = np.zeros((Tb, p))
     b = np.zeros(Tb)
     for t in model.Tb:
+        print('node {}'.format(t))
+        print('makes split? ', model.d[t]())
         A[t - 1, :] = model.a[t, :]()
         print(model.a[t, :]())
         b[t - 1] = model.b[t]()
         print(model.b[t]())
-        print(model.d[t]())
     #  classification of leaves
     C = np.zeros((Tl, K))
     for t in model.Tl:
+        print('leaf {}'.format(t))
         # C[t-1, :] = model.c[t, :]()
         print(model.c[t, :]())
+        print('contains points:')
         print(model.z[:, t]())
+    print('obj: ', model.obj())
     return A, b, C
-
 
 
 def OCTH(X, y, D=2, alpha=1, Nmin=5):
@@ -296,10 +302,10 @@ def OCTH(X, y, D=2, alpha=1, Nmin=5):
             for m in tree.find_left_anchestors(t):
                 model.cnstrBranches.add(
                     expr=sum(model.a[m, j] * X[i - 1, j - 1] for j in model.J) + model.mu <= model.b[m] + (
-                                2 + model.mu) * (1 - model.z[i, t]))
+                            2 + model.mu) * (1 - model.z[i, t]))
     # ---- Solve the problem ---- #
     solverpath = "/Users/marco/Desktop/Anaconda_install/anaconda3/bin/glpsol"
-    sol = SolverFactory('glpk', executable = solverpath).solve(model)
+    sol = SolverFactory('glpk', executable=solverpath).solve(model)
     for info in sol['Solver']:
         print(info)
 
@@ -409,6 +415,4 @@ if __name__ == '__main__':
     OCTclassifier = OptimalTreeClassifier()
     OCTclassifier.train(X, Y)
 
-    print('Average Accuracy\n\t{:.2f}%'.format(OCTclassifier.score(X, Y)))
-
-
+    #print('Average Accuracy\n\t{:.2f}%'.format(OCTclassifier.score(X, Y)))
