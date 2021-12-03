@@ -15,13 +15,15 @@ def minmaxscaling(X):
 
 
 def onehotencoder(Y):
-    y = np.zeros((len(Y), len(np.unique(Y))))
-    for k in np.unique(Y):
-        for i in range(len(Y)):
+    n = len(Y)
+    classes = np.unique(Y)
+    y = np.zeros((n, len(classes)))
+    for i in range(n):
+        for k in classes:
             if Y[i] == k:
-                y[i, k] = 1
+                y[i, k] = int(1)
             else:
-                y[i, k] = -1
+                y[i, k] = int(-1)
     return y
 
 
@@ -92,7 +94,7 @@ def OCT(X, y, D=2, alpha=1, Nmin=5):
     N = len(y)  #  number of observations
     p = X.shape[1]
     hat_L = max(np.bincount(y) / N)  #  baseline accuracy
-    if X.min() < 0 and X.max() > 1:
+    if X.min() < 0 or X.max() > 1:
         X = minmaxscaling(X)
     if y.shape != (N, K):
         Y = onehotencoder(y)
@@ -120,7 +122,7 @@ def OCT(X, y, D=2, alpha=1, Nmin=5):
     model.b = Var(model.Tb, domain=NonNegativeReals)
     model.d = Var(model.Tb, domain=Binary)
 
-    model.z = Var(model.I, model.T, domain=Binary)
+    model.z = Var(model.I, model.Tl, domain=Binary)
 
     model.l = Var(model.Tl, domain=Binary)
     model.c = Var(model.Tl, model.K, domain=Binary)
@@ -132,25 +134,42 @@ def OCT(X, y, D=2, alpha=1, Nmin=5):
         sense=minimize)
 
     # ---- Constraints ---- #
-    # constraints on leaf nodes #
+    # - constraints on leaf nodes - #
     model.cnstrLeaves = ConstraintList()
     for t in model.Tl:
         # constraints on L : missclassification error
         Nt = sum(model.z[i, t] for i in model.I)
         for k in model.K:
             Ntk = (1 / 2) * sum((1 + Y[i - 1, k - 1]) * model.z[i, t] for i in model.I)
+
             model.cnstrLeaves.add(expr=model.L[t] >= Nt - Ntk - N * (1 - model.c[t, k]))
             model.cnstrLeaves.add(expr=model.L[t] <= Nt - Ntk + N * model.c[t, k])
+
         # constraints on c[t, k]
         model.cnstrLeaves.add(expr=sum(model.c[t, k] for k in model.K) == model.l[t])
+
         #  constraints on obs in leaves
+        model.cnstrLeaves.add(expr=sum(model.z[i, t] for i in model.I) <= Nmin * model.l[t])
+
         for i in model.I:
             model.cnstrLeaves.add(expr=model.z[i, t] <= model.l[t])
-        model.cnstrLeaves.add(expr=sum(model.z[i, t] for i in model.I) <= Nmin * model.l[t])
+
+            # branch conditions
+            # right branch condition
+            for m in tree.find_right_anchestors(t):
+                model.cnstrLeaves.add(
+                    expr=sum(model.a[m, j] * X[i - 1, j - 1] for j in model.J) >= model.b[m] - (1 - model.z[i, t]))
+
+            # left branch condition
+            for m in tree.find_left_anchestors(t):
+                model.cnstrLeaves.add(
+                    expr=sum(model.a[m, j] * (X[i - 1, j - 1] + epsilon[j - 1]) for j in model.J) <= model.b[m] + (
+                                1 + np.max(epsilon)) * (1 - model.z[i, t]))
+
     for i in model.I:
         model.cnstrLeaves.add(expr=sum(model.z[i, t] for t in model.Tl) == 1)
 
-    #  constraints on branch nodes #
+    #  - constraints on branch nodes - #
     model.cnstrBranches = ConstraintList()
     for t in model.Tb:
         model.cnstrBranches.add(expr=sum(model.a[t, j] for j in model.J) == model.d[t])
@@ -158,22 +177,19 @@ def OCT(X, y, D=2, alpha=1, Nmin=5):
         if t > 1:
             # cannot find parent of the root
             model.cnstrBranches.add(expr=model.d[t] <= model.d[tree.find_parent(t)])
-
-        # branch conditions
-        for i in model.I:
-            # right branch condition
-            for m in tree.find_right_anchestors(t):
-                model.cnstrBranches.add(
-                    expr=sum(model.a[m, j] * X[i - 1, j - 1] for j in model.J) >= model.b[m] - (1 - model.z[i, t]))
-            # left branch condition
-            for m in tree.find_left_anchestors(t):
-                model.cnstrBranches.add(
-                    expr=sum(model.a[m, j] * (X[i - 1, j - 1] + epsilon[j - 1]) for j in model.J) <= model.b[m] + (
-                            1 + np.max(epsilon)) * (1 - model.z[i, t]))
-
+        '''
+        # branch conditions 
+        for i in model.I: 
+          # right branch condition
+          for m in tree.find_right_anchestors(t): 
+            model.cnstrBranches.add( expr = sum( model.a[m, j] * X[i-1, j-1] for j in model.J) >= model.b[m] - (1-model.z[i, t]) )
+          # left branch condition
+          for m in tree.find_left_anchestors(t):
+            model.cnstrBranches.add( expr = sum( model.a[m, j] * (X[i-1, j-1] + epsilon[j-1]) for j in model.J ) <= model.b[m] + (1+np.max(epsilon))*(1-model.z[i,t])  )
+        '''
     # ---- Solve the problem ---- #
     solverpath = "/Users/marco/Desktop/Anaconda_install/anaconda3/bin/glpsol"
-    sol = SolverFactory('glpk', executable = solverpath).solve(model)
+    sol = SolverFactory('glpk', executable=solverpath).solve(model)
     for info in sol['Solver']:
         print(info)
 
@@ -183,13 +199,18 @@ def OCT(X, y, D=2, alpha=1, Nmin=5):
     b = np.zeros(Tb)
     for t in model.Tb:
         A[t - 1, :] = model.a[t, :]()
+        print(model.a[t, :]())
         b[t - 1] = model.b[t]()
+        print(model.b[t]())
+        print(model.d[t]())
     #  classification of leaves
     C = np.zeros((Tl, K))
     for t in model.Tl:
-        C[t - 1, :] = model.c[t, :]()
-
+        # C[t-1, :] = model.c[t, :]()
+        print(model.c[t, :]())
+        print(model.z[:, t]())
     return A, b, C
+
 
 
 def OCTH(X, y, D=2, alpha=1, Nmin=5):
@@ -388,6 +409,6 @@ if __name__ == '__main__':
     OCTclassifier = OptimalTreeClassifier()
     OCTclassifier.train(X, Y)
 
-    print('Average Accuracy\n\t{:.2f}%'.format(OCTclassifier.score(X)))
+    print('Average Accuracy\n\t{:.2f}%'.format(OCTclassifier.score(X, Y)))
 
 
