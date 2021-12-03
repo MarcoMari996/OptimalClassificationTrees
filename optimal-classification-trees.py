@@ -122,7 +122,7 @@ def OCT(X, y, D=2, alpha=1, Nmin=5):
     model.b = Var(model.Tb, domain=NonNegativeReals)
     model.d = Var(model.Tb, domain=Binary)
 
-    model.z = Var(model.I, model.T, domain=Binary)
+    model.z = Var(model.I, model.Tl, domain=Binary)
 
     model.l = Var(model.Tl, domain=Binary)
     model.c = Var(model.Tl, model.K, domain=Binary)
@@ -156,7 +156,7 @@ def OCT(X, y, D=2, alpha=1, Nmin=5):
 
         for i in model.I:
             model.cnstrLeaves.add(expr=model.z[i, t] <= model.l[t])
-            '''
+
             # branch conditions
             # right branch condition
             for m in tree.find_right_anchestors(t):
@@ -168,7 +168,7 @@ def OCT(X, y, D=2, alpha=1, Nmin=5):
                 model.cnstrLeaves.add(
                     expr=sum(model.a[m, j] * (X[i - 1, j - 1] + epsilon[j - 1]) for j in model.J) <= model.b[m] + (
                             1 + np.max(epsilon)) * (1 - model.z[i, t]))
-            '''
+
 
     # - constraints on branch nodes - #
     model.cnstrBranches = ConstraintList()
@@ -180,6 +180,7 @@ def OCT(X, y, D=2, alpha=1, Nmin=5):
             # cannot find parent of the root
             model.cnstrBranches.add(expr=model.d[t] <= model.d[tree.find_parent(t)])
 
+        '''
         # branch conditions
         for i in model.I:
             # right branch condition
@@ -191,7 +192,7 @@ def OCT(X, y, D=2, alpha=1, Nmin=5):
                 model.cnstrBranches.add(
                     expr=sum(model.a[m, j] * (X[i - 1, j - 1] + epsilon[j - 1]) for j in model.J) <= model.b[t] + (
                                 1 + np.max(epsilon)) * (1 - model.z[i, t]))
-
+        '''
     # ---- Solve the problem ---- #
     solverpath = "/Users/marco/Desktop/Anaconda_install/anaconda3/bin/glpsol"
     sol = SolverFactory('glpk', executable=solverpath).solve(model, tee=True)
