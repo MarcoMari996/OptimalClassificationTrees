@@ -135,6 +135,8 @@ def OCT(X, y, D=2, alpha=1, Nmin=5):
 
     # ---- Constraints ---- #
     # - constraints on leaf nodes - #
+    constrained_left_anchestors = []
+    constrained_right_anchestors = []
     model.cnstrLeaves = ConstraintList()
     for i in model.I:
         model.cnstrLeaves.add(expr=sum(model.z[i, t] for t in model.Tl) == 1)
@@ -160,15 +162,21 @@ def OCT(X, y, D=2, alpha=1, Nmin=5):
             # branch conditions
             # right branch condition
             for m in tree.find_right_anchestors(t):
-                model.cnstrLeaves.add(
-                    expr=sum(model.a[m, j] * X[i - 1, j - 1] for j in model.J) >= model.b[m] - (1 - model.z[i, t]))
+                if m not in constrained_right_anchestors:
+                    model.cnstrLeaves.add(
+                        expr=sum(model.a[m, j] * X[i - 1, j - 1] for j in model.J) >= model.b[m] - (1 - model.z[i, t]))
+                    constrained_right_anchestors.append(m)
 
             # left branch condition
             for m in tree.find_left_anchestors(t):
-                model.cnstrLeaves.add(
-                    expr=sum(model.a[m, j] * (X[i - 1, j - 1] + epsilon[j - 1]) for j in model.J) <= model.b[m] + (
-                            1 + np.max(epsilon)) * (1 - model.z[i, t]))
+                if m not in constrained_left_anchestors:
+                    model.cnstrLeaves.add(
+                        expr=sum(model.a[m, j] * (X[i - 1, j - 1] + epsilon[j - 1]) for j in model.J) <= model.b[m] + (
+                                1 + np.max(epsilon)) * (1 - model.z[i, t]))
+                    constrained_left_anchestors.append(m)
 
+    print(constrained_right_anchestors)
+    print(constrained_left_anchestors)
 
     # - constraints on branch nodes - #
     model.cnstrBranches = ConstraintList()
@@ -180,19 +188,6 @@ def OCT(X, y, D=2, alpha=1, Nmin=5):
             # cannot find parent of the root
             model.cnstrBranches.add(expr=model.d[t] <= model.d[tree.find_parent(t)])
 
-        '''
-        # branch conditions
-        for i in model.I:
-            # right branch condition
-            for m in tree.find_right_anchestors(t):
-                model.cnstrBranches.add(
-                    expr=sum(model.a[m, j] * X[i - 1, j - 1] for j in model.J) >= model.b[t] - (1 - model.z[i, t]))
-            # left branch condition
-            for m in tree.find_left_anchestors(t):
-                model.cnstrBranches.add(
-                    expr=sum(model.a[m, j] * (X[i - 1, j - 1] + epsilon[j - 1]) for j in model.J) <= model.b[t] + (
-                                1 + np.max(epsilon)) * (1 - model.z[i, t]))
-        '''
     # ---- Solve the problem ---- #
     solverpath = "/Users/marco/Desktop/Anaconda_install/anaconda3/bin/glpsol"
     sol = SolverFactory('glpk', executable=solverpath).solve(model, tee=True)
@@ -212,11 +207,13 @@ def OCT(X, y, D=2, alpha=1, Nmin=5):
     #  classification of leaves
     C = np.zeros((Tl, K))
     for t in model.Tl:
-        print('leaf {}'.format(t), '\t', 'contains points? ', model.l[t]())
-        # C[t-1, :] = model.c[t, :]()
-        print('predicted class: ', model.c[t, :]())
-        print(np.argwhere(np.array(model.z[:, t]()) >0).reshape((-1,)))
+        print('leaf {}'.format(t), '\n\t', 'contains points? ', model.l[t]())
+        C[t - Tl, :] = model.c[t, :]()
+        print('\tpredicted class: ', model.c[t, :]())
+        print('\tpoints included:')
+        print('\t', np.argwhere(np.array(model.z[:, t]()) > 0).reshape((-1,)))
     print('obj: ', model.obj())
+
     return A, b, C
 
 
@@ -226,7 +223,7 @@ def OCTH(X, y, D=2, alpha=1, Nmin=5):
     N = len(y)  #  number of observations
     p = X.shape[1]
     hat_L = max(np.bincount(y) / N)  #  baseline accuracy
-    if X.min() < 0 and X.max() > 1:
+    if X.min() < 0 or X.max() > 1:
         X = minmaxscaling(X)
     if y.shape != (N, K):
         Y = onehotencoder(y)
@@ -350,25 +347,27 @@ class OptimalTreeClassifier:
             self.A, self.b, self.C = OCT(X, Y, D=self.D, alpha=self.alpha, Nmin=self.Nmin)
 
     def predict(self, X):
+        if X.min() < 0 or X.max() > 1:
+            print('... normalizing X ...')
+            X = minmaxscaling(X)
         n = X.shape[0]
         p = X.shape[1]
         pred_y = np.zeros(n)
         destination_leaf = dict()
         for i in range(n):
             node = 1
-            next_node = 1
             while node <= self.Tb:
-                if sum(self.A[node, j] * X[i, j] for j in range(p)) - self.b[node] < 0:
+                if sum(self.A[node-1, j] * X[i, j] for j in range(p)) - self.b[node-1] < 0:
                     next_node = 2 * node
                 else:
                     next_node = 2 * node + 1
 
                 if next_node > self.Tb:
                     destination_leaf[i] = next_node
-                else:
-                    node = next_node
 
-            pred_y[i] = np.argwhere(self.C[destination_leaf[i], :] == 1)
+                node = next_node
+            leaf = int(destination_leaf[i] - self.Tl)
+            pred_y[i] = np.argwhere(self.C[leaf, :] == 1)
 
         return pred_y
 
@@ -416,4 +415,4 @@ if __name__ == '__main__':
     OCTclassifier = OptimalTreeClassifier(D=3)
     OCTclassifier.train(X, Y)
 
-    # print('Average Accuracy\n\t{:.2f}%'.format(OCTclassifier.score(X, Y)))
+    print('-- Average Accuracy --\n\t{:.2f}%'.format(OCTclassifier.score(X, Y) * 100))
