@@ -31,7 +31,7 @@ class TreeStructure:
     """
     That' s needed for having trace of the
     tree structure and for indexing Parent nodes,
-    Left Anchestors, and Right Ancehstors given for
+    Left Anchestors, and Right Ancehstors for
     each single node.
     """
 
@@ -88,7 +88,7 @@ class TreeStructure:
         return right_anchestors[::-1]
 
 
-def OCT(X, y, D=2, alpha=1, Nmin=5):
+def OCT(X, y, D=2, alpha=0.01, Nmin=5):
     # ---- Pre-processing steps ---- # 
     K = len(np.unique(y))  # number of classes
     N = len(y)  #  number of observations
@@ -134,7 +134,6 @@ def OCT(X, y, D=2, alpha=1, Nmin=5):
         sense=minimize)
 
     # ---- Constraints ---- #
-    # - constraints on leaf nodes - #
     constrained_left_anchestors = []
     constrained_right_anchestors = []
     model.cnstrLeaves = ConstraintList()
@@ -175,11 +174,9 @@ def OCT(X, y, D=2, alpha=1, Nmin=5):
                                 1 + np.max(epsilon)) * (1 - model.z[i, t]))
                     constrained_left_anchestors.append(m)
 
-    print(constrained_right_anchestors)
-    print(constrained_left_anchestors)
-
     # - constraints on branch nodes - #
     model.cnstrBranches = ConstraintList()
+
     for t in model.Tb:
 
         model.cnstrBranches.add(expr=sum(model.a[t, j] for j in model.J) == model.d[t])
@@ -217,7 +214,7 @@ def OCT(X, y, D=2, alpha=1, Nmin=5):
     return A, b, C
 
 
-def OCTH(X, y, D=2, alpha=1, Nmin=5):
+def OCTH(X, y, D=2, alpha=0.01, Nmin=5):
     # ---- Pre-processing steps ---- # 
     K = len(np.unique(y))  # number of classes
     N = len(y)  #  number of observations
@@ -324,7 +321,7 @@ def OCTH(X, y, D=2, alpha=1, Nmin=5):
 
 class OptimalTreeClassifier:
 
-    def __init__(self, D=2, multivariate=False, alpha=1, Nmin=5):
+    def __init__(self, D=2, multivariate=False, alpha=0.01, Nmin=5):
         #  tree parameters
         self.D = D
         self.T = 2 ** (self.D + 1) - 1
