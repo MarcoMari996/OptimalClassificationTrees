@@ -1,6 +1,6 @@
 from pyomo.environ import *
 import numpy as np
-from sklearn.datasets import load_wine
+from sklearn.datasets import *
 import matplotlib.pyplot as plt
 import matplotlib as mpl
 import seaborn as sns
@@ -39,7 +39,9 @@ class TreeStructure:
         """
         :param d: depth of the tree 
         """
+        self.d = d
         T = 2 ** (d + 1) - 1
+        self.T = T
         self.nodes = list(i for i in range(1, T + 1))
         self.left_children = [node for node in self.nodes if node % 2 == 0]
         self.right_children = [node for node in self.nodes[1:] if node not in self.left_children]
@@ -87,8 +89,20 @@ class TreeStructure:
 
         return right_anchestors[::-1]
 
+    def find_nodes_in_left_path(self, node):
+        left_children = []
+        next_node = node * 2
+        left_children.append(next_node)
+        for n in left_children:
+            next_node = n * 2
+            if next_node < self.T:
+                left_children.append(next_node)
+                left_children.append(next_node + 1)
 
-def OCT(X, y, D=2, alpha=0.01, Nmin=5):
+        return left_children
+
+
+def OCT(X, y, D=2, alpha=1e-7, Nmin=5):
     # ---- Pre-processing steps ---- # 
     K = len(np.unique(y))  # number of classes
     N = len(y)  #  number of observations
@@ -178,12 +192,16 @@ def OCT(X, y, D=2, alpha=0.01, Nmin=5):
     model.cnstrBranches = ConstraintList()
 
     for t in model.Tb:
-
+        for child in tree.find_nodes_in_left_path(t):
+            if child > Tb:
+                model.cnstrBranches.add(expr=model.l[child] <= model.d[t])
+            else:
+                model.cnstrBranches.add(expr=model.d[child] <= model.d[t])
         model.cnstrBranches.add(expr=sum(model.a[t, j] for j in model.J) == model.d[t])
         model.cnstrBranches.add(expr=model.b[t] <= model.d[t])
-        if t > 1:
-            # cannot find parent of the root
-            model.cnstrBranches.add(expr=model.d[t] <= model.d[tree.find_parent(t)])
+        # if t > 1:
+        #     # cannot find parent of the root
+        #     model.cnstrBranches.add(expr=model.d[t] <= model.d[tree.find_parent(t)])
 
     # ---- Solve the problem ---- #
     solverpath = "/Users/marco/Desktop/Anaconda_install/anaconda3/bin/glpsol"
@@ -197,16 +215,16 @@ def OCT(X, y, D=2, alpha=0.01, Nmin=5):
     b = np.zeros(Tb)
     for t in model.Tb:
         print('node {}'.format(t), '\t', 'goes left? ', model.d[t]())
-        A[t - 1, :] = model.a[t, :]()
-        print('a[{}, :] = '.format(t), model.a[t, :]())
+        A[t - 1, :] = [int(a) for a in model.a[t, :]()]
+        print('a[{}, :] = '.format(t), A[t - 1, :])
         b[t - 1] = model.b[t]()
-        print('b[{}] = '.format(t), model.b[t]())
+        print('b[{}] = '.format(t), b[t - 1])
     #  classification of leaves
     C = np.zeros((Tl, K))
     for t in model.Tl:
         print('leaf {}'.format(t), '\n\t', 'contains points? ', model.l[t]())
-        C[t - Tl, :] = model.c[t, :]()
-        print('\tpredicted class: ', model.c[t, :]())
+        C[t - Tl, :] = [int(c) for c in model.c[t, :]()]
+        print('\tpredicted class: ', C[t - Tl, :])
         print('\tpoints included:')
         print('\t', np.argwhere(np.array(model.z[:, t]()) > 0).reshape((-1,)))
     print('obj: ', model.obj())
@@ -214,7 +232,7 @@ def OCT(X, y, D=2, alpha=0.01, Nmin=5):
     return A, b, C
 
 
-def OCTH(X, y, D=2, alpha=0.01, Nmin=5):
+def OCTH(X, y, D=2, alpha=1e-7, Nmin=5):
     # ---- Pre-processing steps ---- # 
     K = len(np.unique(y))  # number of classes
     N = len(y)  #  number of observations
@@ -405,11 +423,11 @@ class OptimalTreeClassifier:
 
 
 if __name__ == '__main__':
-    data = load_wine()
+    data = load_breast_cancer()
     Y = data.target
     X = data.data
 
-    OCTclassifier = OptimalTreeClassifier(D=3)
+    OCTclassifier = OptimalTreeClassifier(D=3, alpha=1)
     OCTclassifier.train(X, Y)
 
     print('-- Average Accuracy --\n\t{:.2f}%'.format(OCTclassifier.score(X, Y) * 100))
