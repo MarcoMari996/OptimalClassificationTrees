@@ -148,8 +148,6 @@ def OCT(X, y, D=2, alpha=1e-7, Nmin=5):
         sense=minimize)
 
     # ---- Constraints ---- #
-    constrained_left_anchestors = []
-    constrained_right_anchestors = []
     model.cnstrLeaves = ConstraintList()
     for i in model.I:
         model.cnstrLeaves.add(expr=sum(model.z[i, t] for t in model.Tl) == 1)
@@ -175,18 +173,14 @@ def OCT(X, y, D=2, alpha=1e-7, Nmin=5):
             # branch conditions
             # right branch condition
             for m in tree.find_right_anchestors(t):
-                if m not in constrained_right_anchestors:
-                    model.cnstrLeaves.add(
-                        expr=sum(model.a[m, j] * X[i - 1, j - 1] for j in model.J) >= model.b[m] - (1 - model.z[i, t]))
-                    constrained_right_anchestors.append(m)
+                model.cnstrLeaves.add(
+                    expr=sum(model.a[m, j] * X[i - 1, j - 1] for j in model.J) >= model.b[m] - (1 - model.z[i, t]))
 
             # left branch condition
             for m in tree.find_left_anchestors(t):
-                if m not in constrained_left_anchestors:
-                    model.cnstrLeaves.add(
-                        expr=sum(model.a[m, j] * (X[i - 1, j - 1] + epsilon[j - 1]) for j in model.J) <= model.b[m] + (
-                                1 + np.max(epsilon)) * (1 - model.z[i, t]))
-                    constrained_left_anchestors.append(m)
+                model.cnstrLeaves.add(
+                    expr=sum(model.a[m, j] * (X[i - 1, j - 1] + epsilon[j - 1]) for j in model.J) <= model.b[m] + (
+                            1 + np.max(epsilon)) * (1 - model.z[i, t]))
 
     # - constraints on branch nodes - #
     model.cnstrBranches = ConstraintList()
@@ -214,7 +208,7 @@ def OCT(X, y, D=2, alpha=1e-7, Nmin=5):
     A = np.zeros((Tb, p))
     b = np.zeros(Tb)
     for t in model.Tb:
-        print('node {}'.format(t), '\t', 'goes left? ', model.d[t]())
+        print('node {}'.format(t), '\t', 'applies a split? ', model.d[t]())
         A[t - 1, :] = [int(a) for a in model.a[t, :]()]
         print('a[{}, :] = '.format(t), A[t - 1, :])
         b[t - 1] = model.b[t]()
@@ -233,18 +227,18 @@ def OCT(X, y, D=2, alpha=1e-7, Nmin=5):
 
 
 def OCTH(X, y, D=2, alpha=1e-7, Nmin=5):
-    # ---- Pre-processing steps ---- # 
+    # ---- Pre-processing steps ---- #
     K = len(np.unique(y))  # number of classes
     N = len(y)  #  number of observations
     p = X.shape[1]
-    hat_L = max(np.bincount(y) / N)  #  baseline accuracy
+    hat_L = max(np.bincount(y) / N)  # baseline accuracy
     if X.min() < 0 or X.max() > 1:
         X = minmaxscaling(X)
     if y.shape != (N, K):
         Y = onehotencoder(y)
 
     tree = TreeStructure(d=D)
-    # ---- Defining useful parameters ---- # 
+    # ---- Defining useful parameters ---- #
     model = ConcreteModel()
     model.J = RangeSet(p)  # remember that RangeSet starts counting from 1
     model.I = RangeSet(N)
@@ -252,11 +246,11 @@ def OCTH(X, y, D=2, alpha=1e-7, Nmin=5):
     T = 2 ** (D + 1) - 1
     Tb = int(np.floor(T / 2))
     Tl = int(np.floor(T / 2)) + 1
-    model.Tb = RangeSet(Tb)  # indexing branch nodes
+    model.Tb = RangeSet(Tb)  # indexing branch nodes
     model.Tl = RangeSet(Tl, T)  # indexing leaf nodes
     model.T = RangeSet(T)
     model.mu = 0.005
-    # ---- Decision Variables ---- #
+    # ---- Decision Variables ---- #
     model.a = Var(model.Tb, model.J, domain=Reals, bounds=(-1, 1))  # single feature splits # nb: this is a'
     model.a_hat = Var(model.Tb, model.J)
     model.b = Var(model.Tb, domain=Reals, bounds=(-1, 1))
@@ -272,8 +266,10 @@ def OCTH(X, y, D=2, alpha=1e-7, Nmin=5):
     model.obj = Objective(expr=(1 / hat_L) * sum(model.L[t] for t in model.Tl) + alpha * sum(
         sum(model.s[t, j] for j in model.J) for t in model.Tb), sense=minimize)
     # ---- Constraints ---- #
-    # constraints on leaf nodes #
     model.cnstrLeaves = ConstraintList()
+    for i in model.I:
+        model.cnstrLeaves.add(expr=sum(model.z[i, t] for t in model.Tl) == 1)
+
     for t in model.Tl:
         # constraints on L : missclassification error
         Nt = sum(model.z[i, t] for i in model.I)
@@ -283,42 +279,50 @@ def OCTH(X, y, D=2, alpha=1e-7, Nmin=5):
             model.cnstrLeaves.add(expr=model.L[t] <= Nt - Ntk + N * model.c[t, k])
         # constraints on c[t, k]
         model.cnstrLeaves.add(expr=sum(model.c[t, k] for k in model.K) == model.l[t])
-        #  constraints on obs in leaves
+        model.cnstrLeaves.add(expr=sum(model.z[i, t] for i in model.I) >= Nmin * model.l[t])
+        # constraints on obs in leaves
         for i in model.I:
             model.cnstrLeaves.add(expr=model.z[i, t] <= model.l[t])
-        model.cnstrLeaves.add(expr=sum(model.z[i, t] for i in model.I) <= Nmin * model.l[t])
-    for i in model.I:
-        model.cnstrLeaves.add(expr=sum(model.z[i, t] for t in model.Tl) == 1)
-    #  constraints on branch nodes #
+
+            # branch conditions
+            # right branch condition
+            for m in tree.find_right_anchestors(t):
+                model.cnstrLeaves.add(
+                    expr=sum(model.a[m, j] * X[i - 1, j - 1] for j in model.J) >= model.b[m] - 2 * (
+                            1 - model.z[i, t]))
+
+            # left branch condition
+            for m in tree.find_left_anchestors(t):
+                model.cnstrLeaves.add(
+                    expr=sum(model.a[m, j] * X[i - 1, j - 1] for j in model.J) + model.mu <= model.b[m] + (
+                            2 + model.mu) * (1 - model.z[i, t]))
+
+    # constraints on branch nodes #
     model.cnstrBranches = ConstraintList()
     for t in model.Tb:
         model.cnstrBranches.add(expr=sum(model.a_hat[t, j] for j in model.J) <= model.d[t])
         model.cnstrBranches.add(expr=sum(model.s[t, j] for j in model.J) >= model.d[t])
         model.cnstrBranches.add(expr=model.b[t] >= - model.d[t])
         model.cnstrBranches.add(expr=model.b[t] <= model.d[t])
-        if t > 1:
-            # cannot find parent of the root
-            model.cnstrBranches.add(expr=model.d[t] <= model.d[tree.find_parent(t)])
+
+        for child in tree.find_nodes_in_left_path(t):
+            if child > Tb:
+                model.cnstrBranches.add(expr=model.l[child] <= model.d[t])
+            else:
+                model.cnstrBranches.add(expr=model.d[child] <= model.d[t])
+        # if t > 1:
+        #     # cannot find parent of the root
+        #     model.cnstrBranches.add(expr=model.d[t] <= model.d[tree.find_parent(t)])
         for j in model.J:
             model.cnstrBranches.add(expr=model.a_hat[t, j] >= model.a[t, j])
             model.cnstrBranches.add(expr=model.a_hat[t, j] >= - model.a[t, j])
             model.cnstrBranches.add(expr=model.a[t, j] >= - model.s[t, j])
             model.cnstrBranches.add(expr=model.a[t, j] <= model.s[t, j])
             model.cnstrBranches.add(expr=model.s[t, j] <= model.d[t])
-        # branch conditions
-        for i in model.I:
-            # right branch condition
-            for m in tree.find_right_anchestors(t):
-                model.cnstrBranches.add(
-                    expr=sum(model.a[m, j] * X[i - 1, j - 1] for j in model.J) >= model.b[m] - 2 * (1 - model.z[i, t]))
-            # left branch condition
-            for m in tree.find_left_anchestors(t):
-                model.cnstrBranches.add(
-                    expr=sum(model.a[m, j] * X[i - 1, j - 1] for j in model.J) + model.mu <= model.b[m] + (
-                            2 + model.mu) * (1 - model.z[i, t]))
+
     # ---- Solve the problem ---- #
     solverpath = "/Users/marco/Desktop/Anaconda_install/anaconda3/bin/glpsol"
-    sol = SolverFactory('glpk', executable=solverpath).solve(model)
+    sol = SolverFactory('glpk', executable=solverpath).solve(model, tee=True)
     for info in sol['Solver']:
         print(info)
 
@@ -327,12 +331,20 @@ def OCTH(X, y, D=2, alpha=1e-7, Nmin=5):
     A = np.zeros((Tb, p))
     b = np.zeros(Tb)
     for t in model.Tb:
-        A[t - 1, :] = model.a[t, :]()
+        print('node {}'.format(t), '\t', 'applies a split? ', model.d[t]())
+        A[t - 1, :] = [int(a) for a in model.a[t, :]()]
+        print('a[{}, :] = '.format(t), A[t - 1, :])
         b[t - 1] = model.b[t]()
-    #  classification of leaves
+        print('b[{}] = '.format(t), b[t - 1])
+        #  classification of leaves
     C = np.zeros((Tl, K))
     for t in model.Tl:
-        C[t - 1, :] = model.c[t, :]()
+        print('leaf {}'.format(t), '\n\t', 'contains points? ', model.l[t]())
+        C[t - Tl, :] = [int(c) for c in model.c[t, :]()]
+        print('\tpredicted class: ', C[t - Tl, :])
+        print('\tpoints included:')
+        print('\t', np.argwhere(np.array(model.z[:, t]()) > 0).reshape((-1,)))
+    print('obj: ', model.obj())
 
     return A, b, C
 
@@ -365,6 +377,7 @@ class OptimalTreeClassifier:
         if X.min() < 0 or X.max() > 1:
             print('... normalizing X ...')
             X = minmaxscaling(X)
+
         n = X.shape[0]
         p = X.shape[1]
         pred_y = np.zeros(n)
@@ -372,7 +385,8 @@ class OptimalTreeClassifier:
         for i in range(n):
             node = 1
             while node <= self.Tb:
-                if sum(self.A[node-1, j] * X[i, j] for j in range(p)) - self.b[node-1] < 0:
+                print(sum(self.A[node - 1, j] * (X[i, j] + self.epsilon[j]) for j in range(p)))
+                if sum(self.A[node - 1, j] * (X[i, j] + self.epsilon[j]) for j in range(p)) < self.b[node - 1]:
                     next_node = 2 * node
                 else:
                     next_node = 2 * node + 1
@@ -423,7 +437,7 @@ class OptimalTreeClassifier:
 
 
 if __name__ == '__main__':
-    data = load_breast_cancer()
+    data = load_wine()
     Y = data.target
     X = data.data
 
