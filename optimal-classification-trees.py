@@ -1,6 +1,7 @@
 from pyomo.environ import *
 import numpy as np
 from sklearn.datasets import *
+from sklearn import tree as CART
 import matplotlib.pyplot as plt
 import matplotlib as mpl
 import seaborn as sns
@@ -102,42 +103,96 @@ class TreeStructure:
         return left_children
 
 
-def OCT(X, y, D=2, alpha=1e-7, Nmin=5):
-    # ---- Pre-processing steps ---- # 
+def OCT(X, y, D=2, alpha=1e-7, Nmin=5, timelimit=None, warmStart=False):
+    # ---- Pre-processing steps ---- #
     K = len(np.unique(y))  # number of classes
-    N = len(y)  #  number of observations
+    N = len(y)  # number of observations
     p = X.shape[1]
-    hat_L = max(np.bincount(y) / N)  #  baseline accuracy
+    hat_L = max(np.bincount(y) / N)  # baseline accuracy
     if X.min() < 0 or X.max() > 1:
         X = minmaxscaling(X)
     if y.shape != (N, K):
         Y = onehotencoder(y)
 
     tree = TreeStructure(d=D)
+    T = 2 ** (D + 1) - 1
+    Tb = int(np.floor(T / 2))
+    Tl = int(np.floor(T / 2)) + 1
+    # ---- Warm Start ---- #
+    if warmStart:
+        cart = CART.DecisionTreeClassifier(max_depth=D, max_leaf_nodes=2 ** D)
+        cart.fit(X, y)
+        feature = cart.tree_.feature
+        initial_a = []
+        initial_a_tmp = []
+        for i in range(len(feature)):
+            if feature[i] != -2 and feature[i + 1] != -2:
+                initial_a.append(feature[i] + 1)
+            elif feature[i] != -2 and feature[i + 1] == -2:
+                initial_a_tmp.append(feature[i] + 1)
+            else:
+                continue
+        initial_a.extend(initial_a_tmp)
 
-    # ---- Defining useful parameters ---- # 
+        threshold = cart.tree_.threshold
+        initial_b = []
+        initial_b_tmp = []
+        for i in range(len(threshold)):
+            if threshold[i] != -2 and threshold[i + 1] != -2:
+                initial_b.append(threshold[i])
+            elif threshold[i] != -2 and threshold[i + 1] == -2:
+                initial_b_tmp.append(threshold[i])
+            else:
+                continue
+        initial_b.extend(initial_b_tmp)
+
+    # ---- Defining useful parameters ---- #
     model = ConcreteModel()
     model.J = RangeSet(p)  # remember that RangeSet starts counting from 1
     model.I = RangeSet(N)
     model.K = RangeSet(K)
-    T = 2 ** (D + 1) - 1
-    Tb = int(np.floor(T / 2))
-    Tl = int(np.floor(T / 2)) + 1
     model.Tb = RangeSet(Tb)  # indexing branch nodes
     model.Tl = RangeSet(Tl, T)  # indexing leaf nodes
     model.T = RangeSet(T)
 
-    epsilon = np.array([X[i + 1, :] - X[i, :] for i in range(N - 1)])
-    epsilon = epsilon[np.unique(np.nonzero(epsilon)[0]), :]
-    epsilon = np.min(epsilon, axis=0)
+    # epsilon = np.array([X[i + 1, :] - X[i, :] for i in range(N - 1)])
+    # epsilon = epsilon[np.unique(np.nonzero(epsilon)[0]), :]
+    # epsilon = np.min(epsilon, axis=0)
 
-    # ---- Decision Variables ---- #
-    model.a = Var(model.Tb, model.J, domain=Binary)  # single feature splits # nb: this is a'
-    model.b = Var(model.Tb, domain=NonNegativeReals)
+    max_diff = np.max(X, 0) - np.min(X, 0)
+    epsilon = np.ones(p) * max_diff
+    for j in range(p):
+        old = 0
+        for i in range(1, N):
+            diff = abs(X[i, j] - X[old, j])
+            old = i
+            if diff < epsilon[j] and diff != 0:
+                epsilon[j] = diff
+
+    epsilon = abs(epsilon)
+
+    # ---- Decision Variables ---- #
+    def initialize_a(model, t, j, init_a=initial_a):
+        l = enumerate(init_a)
+        if (t, j) in l:
+            return 1
+        else:
+            return 0
+
+    def initialize_b(model, t, init_b=initial_b):
+        return init_b[t-1]
+
+    model.a = Var(model.Tb, model.J, domain=Binary) if warmStart is False else Var(model.Tb, model.J,
+                                                                                   domain=Binary,
+                                                                                   initialize=initialize_a)  # single feature splits # nb: this is a'
+    model.b = Var(model.Tb, domain=NonNegativeReals) if warmStart is False else Var(model.Tb, domain=NonNegativeReals,
+                                                                                    initialize=initialize_b)
+
     model.d = Var(model.Tb, domain=Binary)
 
     model.z = Var(model.I, model.Tl, domain=Binary)
-
+    model.Ntk = Var(model.Tl, model.K, domain=Integers)
+    model.Nt = Var(model.Tl, domain=Integers)
     model.l = Var(model.Tl, domain=Binary)
     model.c = Var(model.Tl, model.K, domain=Binary)
     model.L = Var(model.Tl, domain=NonNegativeReals)
@@ -153,19 +208,17 @@ def OCT(X, y, D=2, alpha=1e-7, Nmin=5):
         model.cnstrLeaves.add(expr=sum(model.z[i, t] for t in model.Tl) == 1)
 
     for t in model.Tl:
-        # constraints on L : missclassification error
-        Nt = sum(model.z[i, t] for i in model.I)
-        for k in model.K:
-            Ntk = (1 / 2) * sum((1 + Y[i - 1, k - 1]) * model.z[i, t] for i in model.I)
-
-            model.cnstrLeaves.add(expr=model.L[t] >= Nt - Ntk - N * (1 - model.c[t, k]))
-            model.cnstrLeaves.add(expr=model.L[t] <= Nt - Ntk + N * model.c[t, k])
-
         # constraints on c[t, k]
         model.cnstrLeaves.add(expr=sum(model.c[t, k] for k in model.K) == model.l[t])
-
-        #  constraints on obs in leaves
+        # constraints on obs in leaves
         model.cnstrLeaves.add(expr=sum(model.z[i, t] for i in model.I) >= Nmin * model.l[t])
+        # constraints on L : missclassification error
+        model.cnstrLeaves.add(expr=model.Nt[t] == sum(model.z[i, t] for i in model.I))
+        for k in model.K:
+            model.cnstrLeaves.add(
+                expr=model.Ntk[t, k] == (1 / 2) * sum((1 + Y[i - 1, k - 1]) * model.z[i, t] for i in model.I))
+            model.cnstrLeaves.add(expr=model.L[t] >= model.Nt[t] - model.Ntk[t, k] - N * (1 - model.c[t, k]))
+            model.cnstrLeaves.add(expr=model.L[t] <= model.Nt[t] - model.Ntk[t, k] + N * model.c[t, k])
 
         for i in model.I:
             model.cnstrLeaves.add(expr=model.z[i, t] <= model.l[t])
@@ -199,7 +252,7 @@ def OCT(X, y, D=2, alpha=1e-7, Nmin=5):
 
     # ---- Solve the problem ---- #
     solverpath = "/Users/marco/Desktop/Anaconda_install/anaconda3/bin/glpsol"
-    sol = SolverFactory('glpk', executable=solverpath).solve(model, tee=True)
+    sol = SolverFactory('glpk', executable=solverpath).solve(model, tee=True, timelimit=timelimit)
     for info in sol['Solver']:
         print(info)
 
@@ -213,7 +266,7 @@ def OCT(X, y, D=2, alpha=1e-7, Nmin=5):
         print('a[{}, :] = '.format(t), A[t - 1, :])
         b[t - 1] = model.b[t]()
         print('b[{}] = '.format(t), b[t - 1])
-    #  classification of leaves
+    # classification of leaves
     C = np.zeros((Tl, K))
     for t in model.Tl:
         print('leaf {}'.format(t), '\n\t', 'contains points? ', model.l[t]())
@@ -226,7 +279,8 @@ def OCT(X, y, D=2, alpha=1e-7, Nmin=5):
     return A, b, C
 
 
-def OCTH(X, y, D=2, alpha=1e-7, Nmin=5):
+def OCTH(X, y, D=2, alpha=1e-7, Nmin=5, timelimit=None):
+    # todo: review the constraints
     # ---- Pre-processing steps ---- #
     K = len(np.unique(y))  # number of classes
     N = len(y)  #  number of observations
@@ -322,7 +376,7 @@ def OCTH(X, y, D=2, alpha=1e-7, Nmin=5):
 
     # ---- Solve the problem ---- #
     solverpath = "/Users/marco/Desktop/Anaconda_install/anaconda3/bin/glpsol"
-    sol = SolverFactory('glpk', executable=solverpath).solve(model, tee=True)
+    sol = SolverFactory('glpk', executable=solverpath).solve(model, tee=True, timelimit=timelimit)
     for info in sol['Solver']:
         print(info)
 
@@ -352,7 +406,7 @@ def OCTH(X, y, D=2, alpha=1e-7, Nmin=5):
 class OptimalTreeClassifier:
 
     def __init__(self, D=2, multivariate=False, alpha=0.01, Nmin=5):
-        #  tree parameters
+        # tree parameters
         self.D = D
         self.T = 2 ** (self.D + 1) - 1
         self.Tb = (np.floor(self.T / 2))
@@ -367,11 +421,12 @@ class OptimalTreeClassifier:
         self.alpha = alpha
         self.Nmin = Nmin
 
-    def train(self, X, Y):
+    def train(self, X, Y, timelimit=None, warmStart=False):
         if self.multivariate:
-            self.A, self.b, self.C = OCTH(X, Y, D=self.D, alpha=self.alpha, Nmin=self.Nmin)
+            self.A, self.b, self.C = OCTH(X, Y, D=self.D, alpha=self.alpha, Nmin=self.Nmin, timelimit=timelimit)
         else:
-            self.A, self.b, self.C = OCT(X, Y, D=self.D, alpha=self.alpha, Nmin=self.Nmin)
+            self.A, self.b, self.C = OCT(X, Y, D=self.D, alpha=self.alpha, Nmin=self.Nmin, timelimit=timelimit,
+                                         warmStart=warmStart)
 
     def predict(self, X):
         if X.min() < 0 or X.max() > 1:
@@ -383,18 +438,22 @@ class OptimalTreeClassifier:
         pred_y = np.zeros(n)
         destination_leaf = dict()
         for i in range(n):
+            print('point {}'.format(i))
             node = 1
             while node <= self.Tb:
-                print(sum(self.A[node - 1, j] * (X[i, j] + self.epsilon[j]) for j in range(p)))
-                if sum(self.A[node - 1, j] * (X[i, j] + self.epsilon[j]) for j in range(p)) < self.b[node - 1]:
-                    next_node = 2 * node
-                else:
+                print(sum(self.A[node - 1, j] * (X[i, j]) for j in range(p)), '\t>=\t', self.b[node - 1])
+                if sum(self.A[node - 1, j] * (X[i, j]) for j in range(p)) >= self.b[node - 1]:
+                    print('go right')
                     next_node = 2 * node + 1
+                else:
+                    print('go left')
+                    next_node = 2 * node
 
                 if next_node > self.Tb:
                     destination_leaf[i] = next_node
 
                 node = next_node
+
             leaf = int(destination_leaf[i] - self.Tl)
             pred_y[i] = np.argwhere(self.C[leaf, :] == 1)
 
@@ -437,11 +496,11 @@ class OptimalTreeClassifier:
 
 
 if __name__ == '__main__':
-    data = load_wine()
+    data = load_breast_cancer()
     Y = data.target
     X = data.data
 
-    OCTclassifier = OptimalTreeClassifier(D=3, alpha=1)
-    OCTclassifier.train(X, Y)
+    OCTclassifier = OptimalTreeClassifier(D=2, alpha=0.5)
+    OCTclassifier.train(X, Y, warmStart=True, timelimit=300)
 
-    print('-- Average Accuracy --\n\t{:.2f}%'.format(OCTclassifier.score(X, Y) * 100))
+    print('\n-- Average Accuracy --\n\t{:.2f}%'.format(OCTclassifier.score(X, Y) * 100))
