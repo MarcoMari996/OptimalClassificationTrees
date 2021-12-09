@@ -1,4 +1,5 @@
 from pyomo.environ import *
+from pyomo.opt import TerminationCondition
 import numpy as np
 from sklearn.datasets import *
 from sklearn import tree as CART
@@ -145,6 +146,15 @@ def OCT(X, y, D=2, alpha=1e-7, Nmin=5, timelimit=None, warmStart=False):
             else:
                 continue
         initial_b.extend(initial_b_tmp)
+        def initialize_a(model, t, j, init_a=initial_a):
+            l = enumerate(init_a)
+            if (t, j) in l:
+                return 1
+            else:
+                return 0
+
+        def initialize_b(model, t, init_b=initial_b):
+            return init_b[t - 1]
 
     # ---- Defining useful parameters ---- #
     model = ConcreteModel()
@@ -155,33 +165,11 @@ def OCT(X, y, D=2, alpha=1e-7, Nmin=5, timelimit=None, warmStart=False):
     model.Tl = RangeSet(Tl, T)  # indexing leaf nodes
     model.T = RangeSet(T)
 
-    # epsilon = np.array([X[i + 1, :] - X[i, :] for i in range(N - 1)])
-    # epsilon = epsilon[np.unique(np.nonzero(epsilon)[0]), :]
-    # epsilon = np.min(epsilon, axis=0)
-
-    max_diff = np.max(X, 0) - np.min(X, 0)
-    epsilon = np.ones(p) * max_diff
-    for j in range(p):
-        old = 0
-        for i in range(1, N):
-            diff = abs(X[i, j] - X[old, j])
-            old = i
-            if diff < epsilon[j] and diff != 0:
-                epsilon[j] = diff
-
-    epsilon = abs(epsilon)
+    epsilon = np.array([np.abs(X[i + 1, :] - X[i, :]) for i in range(N - 1)])
+    epsilon = epsilon[np.unique(np.nonzero(epsilon)[0]), :]
+    epsilon = np.min(epsilon, axis=0)
 
     # ---- Decision Variables ---- #
-    def initialize_a(model, t, j, init_a=initial_a):
-        l = enumerate(init_a)
-        if (t, j) in l:
-            return 1
-        else:
-            return 0
-
-    def initialize_b(model, t, init_b=initial_b):
-        return init_b[t-1]
-
     model.a = Var(model.Tb, model.J, domain=Binary) if warmStart is False else Var(model.Tb, model.J,
                                                                                    domain=Binary,
                                                                                    initialize=initialize_a)  # single feature splits # nb: this is a'
@@ -251,11 +239,18 @@ def OCT(X, y, D=2, alpha=1e-7, Nmin=5, timelimit=None, warmStart=False):
         #     model.cnstrBranches.add(expr=model.d[t] <= model.d[tree.find_parent(t)])
 
     # ---- Solve the problem ---- #
-    solverpath = "/Users/marco/Desktop/Anaconda_install/anaconda3/bin/glpsol"
-    sol = SolverFactory('glpk', executable=solverpath).solve(model, tee=True, timelimit=timelimit)
-    for info in sol['Solver']:
-        print(info)
-
+    # solvername = 'glpk'
+    solvername = 'gurobi'
+    # solverpath = "/Users/marco/Desktop/Anaconda_install/anaconda3/bin/glpsol"
+    solver = SolverFactory(solvername)
+    solver.options['Timelimit'] = timelimit
+    sol = solver.solve(model, tee=True, load_solutions=False)
+    # Get a JSON representation of the solution
+    sol_json = sol.json_repn()
+    # Check solution status
+    if sol_json['Solver'][0]['Status'] != 'ok':
+        return None, []
+    model.solutions.load_from(sol)
     # ---- Return Trained Parameters ---- #
     # splitting parameters
     A = np.zeros((Tb, p))
@@ -280,7 +275,6 @@ def OCT(X, y, D=2, alpha=1e-7, Nmin=5, timelimit=None, warmStart=False):
 
 
 def OCTH(X, y, D=2, alpha=1e-7, Nmin=5, timelimit=None):
-    # todo: review the constraints
     # ---- Pre-processing steps ---- #
     K = len(np.unique(y))  # number of classes
     N = len(y)  #  number of observations
@@ -316,6 +310,8 @@ def OCTH(X, y, D=2, alpha=1e-7, Nmin=5, timelimit=None):
     model.l = Var(model.Tl, domain=Binary)
     model.c = Var(model.Tl, model.K, domain=Binary)
     model.L = Var(model.Tl, domain=NonNegativeReals)
+    model.Ntk = Var(model.Tl, model.K, domain=Integers)
+    model.Nt = Var(model.Tl, domain=Integers)
     # ---- Objective Function ---- #
     model.obj = Objective(expr=(1 / hat_L) * sum(model.L[t] for t in model.Tl) + alpha * sum(
         sum(model.s[t, j] for j in model.J) for t in model.Tb), sense=minimize)
@@ -326,11 +322,11 @@ def OCTH(X, y, D=2, alpha=1e-7, Nmin=5, timelimit=None):
 
     for t in model.Tl:
         # constraints on L : missclassification error
-        Nt = sum(model.z[i, t] for i in model.I)
+        model.cnstrLeaves.add(expr=model.Nt[t] == sum(model.z[i, t] for i in model.I))
         for k in model.K:
-            Ntk = (1 / 2) * sum((1 + Y[i - 1, k - 1]) * model.z[i, t] for i in model.I)
-            model.cnstrLeaves.add(expr=model.L[t] >= Nt - Ntk - N * (1 - model.c[t, k]))
-            model.cnstrLeaves.add(expr=model.L[t] <= Nt - Ntk + N * model.c[t, k])
+            model.cnstrLeaves.add(expr=model.Ntk[t, k] == (1 / 2) * sum((1 + Y[i - 1, k - 1]) * model.z[i, t] for i in model.I))
+            model.cnstrLeaves.add(expr=model.L[t] >= model.Nt[t] - model.Ntk[t, k] - N * (1 - model.c[t, k]))
+            model.cnstrLeaves.add(expr=model.L[t] <= model.Nt[t] - model.Ntk[t, k] + N * model.c[t, k])
         # constraints on c[t, k]
         model.cnstrLeaves.add(expr=sum(model.c[t, k] for k in model.K) == model.l[t])
         model.cnstrLeaves.add(expr=sum(model.z[i, t] for i in model.I) >= Nmin * model.l[t])
@@ -359,6 +355,13 @@ def OCTH(X, y, D=2, alpha=1e-7, Nmin=5, timelimit=None):
         model.cnstrBranches.add(expr=model.b[t] >= - model.d[t])
         model.cnstrBranches.add(expr=model.b[t] <= model.d[t])
 
+        for j in model.J:
+            model.cnstrBranches.add(expr=model.a_hat[t, j] >= model.a[t, j])
+            model.cnstrBranches.add(expr=model.a_hat[t, j] >= - model.a[t, j])
+            model.cnstrBranches.add(expr=model.a[t, j] >= - model.s[t, j])
+            model.cnstrBranches.add(expr=model.a[t, j] <= model.s[t, j])
+            model.cnstrBranches.add(expr=model.s[t, j] <= model.d[t])
+
         for child in tree.find_nodes_in_left_path(t):
             if child > Tb:
                 model.cnstrBranches.add(expr=model.l[child] <= model.d[t])
@@ -367,40 +370,41 @@ def OCTH(X, y, D=2, alpha=1e-7, Nmin=5, timelimit=None):
         # if t > 1:
         #     # cannot find parent of the root
         #     model.cnstrBranches.add(expr=model.d[t] <= model.d[tree.find_parent(t)])
-        for j in model.J:
-            model.cnstrBranches.add(expr=model.a_hat[t, j] >= model.a[t, j])
-            model.cnstrBranches.add(expr=model.a_hat[t, j] >= - model.a[t, j])
-            model.cnstrBranches.add(expr=model.a[t, j] >= - model.s[t, j])
-            model.cnstrBranches.add(expr=model.a[t, j] <= model.s[t, j])
-            model.cnstrBranches.add(expr=model.s[t, j] <= model.d[t])
 
-    # ---- Solve the problem ---- #
-    solverpath = "/Users/marco/Desktop/Anaconda_install/anaconda3/bin/glpsol"
-    sol = SolverFactory('glpk', executable=solverpath).solve(model, tee=True, timelimit=timelimit)
-    for info in sol['Solver']:
-        print(info)
+        # ---- Solve the problem ---- #
+        # solvername = 'glpk'
+        solvername = 'gurobi'
+        # solverpath = "/Users/marco/Desktop/Anaconda_install/anaconda3/bin/glpsol"
+        solver = SolverFactory(solvername)
+        solver.options['Timelimit'] = timelimit
+        sol = solver.solve(model, tee=True, load_solutions=False)
+        # Get a JSON representation of the solution
+        sol_json = sol.json_repn()
+        # Check solution status
+        if sol_json['Solver'][0]['Status'] != 'ok':
+            return None, []
+        model.solutions.load_from(sol)
+        # ---- Return Trained Parameters ---- #
+        # splitting parameters
+        A = np.zeros((Tb, p))
+        b = np.zeros(Tb)
+        for t in model.Tb:
+            print('node {}'.format(t), '\t', 'applies a split? ', model.d[t]())
+            A[t - 1, :] = [int(a) for a in model.a[t, :]()]
+            print('a[{}, :] = '.format(t), A[t - 1, :])
+            b[t - 1] = model.b[t]()
+            print('b[{}] = '.format(t), b[t - 1])
+        # classification of leaves
+        C = np.zeros((Tl, K))
+        for t in model.Tl:
+            print('leaf {}'.format(t), '\n\t', 'contains points? ', model.l[t]())
+            C[t - Tl, :] = [int(c) for c in model.c[t, :]()]
+            print('\tpredicted class: ', C[t - Tl, :])
+            print('\tpoints included:')
+            print('\t', np.argwhere(np.array(model.z[:, t]()) > 0).reshape((-1,)))
+        print('obj: ', model.obj())
 
-    # ---- Return Trained Parameters ---- #
-    # splitting parameters
-    A = np.zeros((Tb, p))
-    b = np.zeros(Tb)
-    for t in model.Tb:
-        print('node {}'.format(t), '\t', 'applies a split? ', model.d[t]())
-        A[t - 1, :] = [int(a) for a in model.a[t, :]()]
-        print('a[{}, :] = '.format(t), A[t - 1, :])
-        b[t - 1] = model.b[t]()
-        print('b[{}] = '.format(t), b[t - 1])
-        #  classification of leaves
-    C = np.zeros((Tl, K))
-    for t in model.Tl:
-        print('leaf {}'.format(t), '\n\t', 'contains points? ', model.l[t]())
-        C[t - Tl, :] = [int(c) for c in model.c[t, :]()]
-        print('\tpredicted class: ', C[t - Tl, :])
-        print('\tpoints included:')
-        print('\t', np.argwhere(np.array(model.z[:, t]()) > 0).reshape((-1,)))
-    print('obj: ', model.obj())
-
-    return A, b, C
+        return A, b, C
 
 
 class OptimalTreeClassifier:
@@ -438,15 +442,11 @@ class OptimalTreeClassifier:
         pred_y = np.zeros(n)
         destination_leaf = dict()
         for i in range(n):
-            print('point {}'.format(i))
             node = 1
             while node <= self.Tb:
-                print(sum(self.A[node - 1, j] * (X[i, j]) for j in range(p)), '\t>=\t', self.b[node - 1])
-                if sum(self.A[node - 1, j] * (X[i, j]) for j in range(p)) >= self.b[node - 1]:
-                    print('go right')
+                if np.dot(self.A[node - 1, :], np.transpose(X[i, :])) >= self.b[node - 1]:
                     next_node = 2 * node + 1
                 else:
-                    print('go left')
                     next_node = 2 * node
 
                 if next_node > self.Tb:
@@ -496,11 +496,11 @@ class OptimalTreeClassifier:
 
 
 if __name__ == '__main__':
-    data = load_breast_cancer()
+    data = load_wine()
     Y = data.target
     X = data.data
 
-    OCTclassifier = OptimalTreeClassifier(D=2, alpha=0.5)
-    OCTclassifier.train(X, Y, warmStart=True, timelimit=300)
+    OCTclassifier = OptimalTreeClassifier(D=2, alpha=0.05, multivariate=True)
+    OCTclassifier.train(X, Y, warmStart=True, timelimit=None)
 
     print('\n-- Average Accuracy --\n\t{:.2f}%'.format(OCTclassifier.score(X, Y) * 100))
