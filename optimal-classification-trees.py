@@ -1,8 +1,8 @@
 from pyomo.environ import *
-from pyomo.opt import TerminationCondition
 import numpy as np
 from sklearn.datasets import *
 from sklearn import tree as CART
+from sklearn.model_selection import train_test_split
 import matplotlib.pyplot as plt
 import matplotlib as mpl
 import seaborn as sns
@@ -243,13 +243,12 @@ def OCT(X, y, D=2, alpha=1e-7, Nmin=5, timelimit=None, warmStart=False):
     solvername = 'gurobi'
     # solverpath = "/Users/marco/Desktop/Anaconda_install/anaconda3/bin/glpsol"
     solver = SolverFactory(solvername)
-    solver.options['Timelimit'] = timelimit
+    if timelimit is not None:
+        solver.options['Timelimit'] = timelimit
     sol = solver.solve(model, tee=True, load_solutions=False)
     # Get a JSON representation of the solution
     sol_json = sol.json_repn()
     # Check solution status
-    if sol_json['Solver'][0]['Status'] != 'ok':
-        return None, []
     model.solutions.load_from(sol)
     # ---- Return Trained Parameters ---- #
     # splitting parameters
@@ -371,40 +370,39 @@ def OCTH(X, y, D=2, alpha=1e-7, Nmin=5, timelimit=None):
         #     # cannot find parent of the root
         #     model.cnstrBranches.add(expr=model.d[t] <= model.d[tree.find_parent(t)])
 
-        # ---- Solve the problem ---- #
-        # solvername = 'glpk'
-        solvername = 'gurobi'
-        # solverpath = "/Users/marco/Desktop/Anaconda_install/anaconda3/bin/glpsol"
-        solver = SolverFactory(solvername)
+    # ---- Solve the problem ---- #
+    # solvername = 'glpk'
+    solvername = 'gurobi'
+    # solverpath = "/Users/marco/Desktop/Anaconda_install/anaconda3/bin/glpsol"
+    solver = SolverFactory(solvername)
+    if timelimit is not None:
         solver.options['Timelimit'] = timelimit
-        sol = solver.solve(model, tee=True, load_solutions=False)
-        # Get a JSON representation of the solution
-        sol_json = sol.json_repn()
-        # Check solution status
-        if sol_json['Solver'][0]['Status'] != 'ok':
-            return None, []
-        model.solutions.load_from(sol)
-        # ---- Return Trained Parameters ---- #
-        # splitting parameters
-        A = np.zeros((Tb, p))
-        b = np.zeros(Tb)
-        for t in model.Tb:
-            print('node {}'.format(t), '\t', 'applies a split? ', model.d[t]())
-            A[t - 1, :] = [int(a) for a in model.a[t, :]()]
-            print('a[{}, :] = '.format(t), A[t - 1, :])
-            b[t - 1] = model.b[t]()
-            print('b[{}] = '.format(t), b[t - 1])
-        # classification of leaves
-        C = np.zeros((Tl, K))
-        for t in model.Tl:
-            print('leaf {}'.format(t), '\n\t', 'contains points? ', model.l[t]())
-            C[t - Tl, :] = [int(c) for c in model.c[t, :]()]
-            print('\tpredicted class: ', C[t - Tl, :])
-            print('\tpoints included:')
-            print('\t', np.argwhere(np.array(model.z[:, t]()) > 0).reshape((-1,)))
-        print('obj: ', model.obj())
+    sol = solver.solve(model, tee=True, load_solutions=False)
+    # Get a JSON representation of the solution
+    sol_json = sol.json_repn()
+    # Check solution status
+    model.solutions.load_from(sol)
+    # ---- Return Trained Parameters ---- #
+    # splitting parameters
+    A = np.zeros((Tb, p))
+    b = np.zeros(Tb)
+    for t in model.Tb:
+        print('node {}'.format(t), '\t', 'applies a split? ', model.d[t]())
+        A[t - 1, :] = [int(a) for a in model.a[t, :]()]
+        print('a[{}, :] = '.format(t), A[t - 1, :])
+        b[t - 1] = model.b[t]()
+        print('b[{}] = '.format(t), b[t - 1])
+    # classification of leaves
+    C = np.zeros((Tl, K))
+    for t in model.Tl:
+        print('leaf {}'.format(t), '\n\t', 'contains points? ', model.l[t]())
+        C[t - Tl, :] = [int(c) for c in model.c[t, :]()]
+        print('\tpredicted class: ', C[t - Tl, :])
+        print('\tpoints included:')
+        print('\t', np.argwhere(np.array(model.z[:, t]()) > 0).reshape((-1,)))
+    print('obj: ', model.obj())
 
-        return A, b, C
+    return A, b, C
 
 
 class OptimalTreeClassifier:
@@ -496,11 +494,15 @@ class OptimalTreeClassifier:
 
 
 if __name__ == '__main__':
-    data = load_wine()
+    data = load_breast_cancer()
     Y = data.target
     X = data.data
+    seed = np.random.seed(999)
+    Xtrain, Xtest, Ytrain, Ytest = train_test_split(X,Y, test_size=0.3, random_state=seed)
 
-    OCTclassifier = OptimalTreeClassifier(D=2, alpha=0.05, multivariate=True)
-    OCTclassifier.train(X, Y, warmStart=True, timelimit=None)
+    OCTclassifier = OptimalTreeClassifier(D=3, alpha=0.01, multivariate=False)
+    OCTclassifier.train(Xtrain, Ytrain, warmStart=False, timelimit=300)
 
-    print('\n-- Average Accuracy --\n\t{:.2f}%'.format(OCTclassifier.score(X, Y) * 100))
+    print('\n-- Train Accuracy --\n\t{:.2f}%'.format(OCTclassifier.score(Xtrain, Ytrain) * 100))
+    print('\n-- Test Accuracy --\n\t{:.2f}%'.format(OCTclassifier.score(Xtest, Ytest) * 100))
+    print('Silly classifier accuracy: {:.2f}%'.format(max(np.bincount(Y) / Y.shape[0]) * 100))
