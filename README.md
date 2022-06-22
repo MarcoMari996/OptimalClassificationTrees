@@ -11,4 +11,22 @@ The formulation of the construction of the classification, or regression, tree a
 
 Moreover, the ILP formulation allows you to easily considering splits that can take into account more than one feature at a time, without eccessive efforts in terms of problem statements, just by changing some of the constraints and the variables used in the formulation. 
 
+### Notation 
 
+<img src="./images/notation.png">
+
+## OCT: univariate splits formulation
+
+<img src="./images/univar-constr-on-splits.png">
+<img src="./images/univar-constr-on-leaves.png">
+<img src="./images/univar-constr-on-missclassification.png">
+<img src="./images/univar-objfun.png">
+
+## OCT-H: Optimal Classification Trees with Hyperplanes (multivariate splits formulation)
+
+<img src="./images/multivar-constr-on-splits.png">
+<img src="./images/multivar-objfun.png">
+
+## Out of Samples accuracy comparison with respect to CARTs
+
+<img src="./images/acc-comparison-with-CARTs.png">
