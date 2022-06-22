@@ -27,6 +27,6 @@ Moreover, the ILP formulation allows you to easily considering splits that can t
 <img src="./images/multivar-constr-on-splits.png">
 <img src="./images/multivar-objfun.png">
 
-## Out of Samples accuracy comparison with respect to CARTs
+## Out of Samples accuracy comparison with respect to CARTs in UCI ML Breast Cancer Wisconsin (Diagnostic) datasets
 
 <img src="./images/acc-comparison-with-CARTs.png">
