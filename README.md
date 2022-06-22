@@ -19,7 +19,7 @@ Moreover, the ILP formulation allows you to easily considering splits that can t
 
 <img src="./images/univar-constr-on-splits.png">
 <img src="./images/univar-constr-on-leaves.png">
-<img src="./images/univar-constr-on-missclassification.png">
+<img src="./images/univar-contsr-on-missclassification.png">
 <img src="./images/univar-objfun.png">
 
 ## OCT-H: Optimal Classification Trees with Hyperplanes (multivariate splits formulation)
